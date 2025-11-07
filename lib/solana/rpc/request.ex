@@ -68,6 +68,17 @@ defmodule Solana.RPC.Request do
   end
 
   @doc """
+  Returns the slot that has reached the given or default commitment level.
+
+  For more information, see [the Solana
+  docs](https://solana.com/docs/rpc/http/getslot).
+  """
+  @spec get_slot(opts :: keyword) :: t
+  def get_slot(opts \\ []) do
+    {"getSlot", [encode_opts(opts)]}
+  end
+
+  @doc """
   Returns identity and transaction information about a confirmed block in the
   ledger.
 

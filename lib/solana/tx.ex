@@ -85,6 +85,14 @@ defmodule Solana.Transaction do
     mirrors the JavaScript solana/web3.js `serialize({ requireAllSignatures })`
     behavior.
 
+  - `:lookup_tables` (default: `%{}`) — A map of address lookup tables to use.
+    Each key is a `t:Solana.Key.t/0` representing the address of a lookup table
+    account, and each value is a list of `t:Solana.Key.t/0` representing the
+    addresses of that lookup table.
+
+    When non-empty, the transaction is encoded using the [version 0
+    format](https://docs.anza.xyz/proposals/versioned-transactions#versioned-transactions).
+
   Returns `{:ok, encoded_transaction}` if the transaction was successfully
   encoded, or an error tuple if the encoding failed -- plus more error details
   via `Logger.error/1`.
@@ -100,7 +108,9 @@ defmodule Solana.Transaction do
          accounts = compile_accounts(ixs, tx.payer),
          true <-
            signers_match?(accounts, signers, Keyword.get(opts, :require_all_signatures?, true)) do
-      message = encode_message(accounts, tx.blockhash, ixs)
+      lookup_tables = Keyword.get(opts, :lookup_tables, %{})
+
+      message = encode_message(accounts, tx.blockhash, ixs, lookup_tables)
 
       signatures =
         accounts
@@ -137,7 +147,7 @@ defmodule Solana.Transaction do
   # https://docs.solana.com/developing/programming-model/transactions#account-addresses-format
   defp compile_accounts(ixs, payer) do
     ixs
-    |> Enum.map(fn ix -> [%Account{key: ix.program} | ix.accounts] end)
+    |> Enum.map(fn ix -> [%Account{key: ix.program, invoked?: true} | ix.accounts] end)
     |> List.flatten()
     |> Enum.reject(&(&1.key == payer))
     |> Enum.sort_by(&{&1.signer?, &1.writable?}, &>=/2)
@@ -161,13 +171,84 @@ defmodule Solana.Transaction do
     true
   end
 
+  defp encode_version(0), do: <<0x80>>
+
+  # https://docs.anza.xyz/proposals/versioned-transactions#versioned-transactions
+  defp compile_lookup_table(accounts, {lookup_table, keys}) do
+    # Accounts that are signers, invoked, or not present in the lookup table
+    # must be stored in the message itself
+    {static_accounts, lookup_accounts} =
+      accounts
+      |> Enum.split_with(& &1.key not in keys or &1.signer? or &1.invoked?)
+
+    {writable_indices, readonly_indices} =
+      lookup_accounts
+      |> Enum.map(fn %Account{key: key} = account ->
+        keys
+        |> Enum.find_index(& &1 == key)
+        |> then(&{account, &1})
+      end)
+      |> Enum.split_with(fn {account, _index} -> account.writable? end)
+      |> then(fn {writable_accounts_with_index, readonly_accounts_with_index} ->
+        {
+          writable_accounts_with_index |> Enum.map(fn {_account, index} -> index end),
+          readonly_accounts_with_index |> Enum.map(fn {_account, index} -> index end)
+        }
+      end)
+
+    compiled_lookup_table =
+      [
+        lookup_table,
+        CompactArray.to_iolist(writable_indices),
+        CompactArray.to_iolist(readonly_indices)
+      ]
+      |> :erlang.list_to_binary()
+
+    {static_accounts, lookup_accounts, compiled_lookup_table}
+  end
+
+  defp compile_lookup_tables(accounts, lookup_tables) do
+    lookup_tables
+    |> Enum.reduce({accounts, [], []}, fn lookup_table, acc ->
+      {static_accounts, lookup_accounts, compiled_lookup_table} =
+        compile_lookup_table(elem(acc, 0), lookup_table)
+      {
+        static_accounts,
+        [lookup_accounts | elem(acc, 1)],
+        [compiled_lookup_table | elem(acc, 2)]
+      }
+    end)
+    |> then(fn {_, lookup_accounts, compiled_lookup_tables} = result ->
+      result
+      |> put_elem(1, lookup_accounts |> Enum.reverse() |> List.flatten())
+      |> put_elem(2, compiled_lookup_tables |> Enum.reverse())
+    end)
+  end
+
   # https://docs.solana.com/developing/programming-model/transactions#message-format
-  defp encode_message(accounts, blockhash, ixs) do
+  defp encode_message(accounts, blockhash, ixs, %{} = _lookup_tables) do
     [
       create_header(accounts),
       CompactArray.to_iolist(Enum.map(accounts, & &1.key)),
       blockhash,
       CompactArray.to_iolist(encode_instructions(ixs, accounts))
+    ]
+    |> :erlang.list_to_binary()
+  end
+
+  defp encode_message(accounts, blockhash, ixs, lookup_tables) do
+    {static_accounts, lookup_accounts, compiled_lookup_tables} =
+      compile_lookup_tables(accounts, lookup_tables)
+
+    accounts = static_accounts ++ lookup_accounts
+
+    [
+      encode_version(0),
+      create_header(static_accounts),
+      CompactArray.to_iolist(Enum.map(static_accounts, & &1.key)),
+      blockhash,
+      CompactArray.to_iolist(encode_instructions(ixs, accounts)),
+      CompactArray.to_iolist(compiled_lookup_tables)
     ]
     |> :erlang.list_to_binary()
   end

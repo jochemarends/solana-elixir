@@ -10,12 +10,14 @@ defmodule Solana.Account do
   @type t :: %__MODULE__{
           signer?: boolean(),
           writable?: boolean(),
+          invoked?: boolean(),
           key: Solana.key() | nil
         }
 
   defstruct [
     :key,
     signer?: false,
-    writable?: false
+    writable?: false,
+    invoked?: false
   ]
 end
