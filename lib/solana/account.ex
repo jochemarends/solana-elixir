@@ -16,6 +16,6 @@ defmodule Solana.Account do
   defstruct [
     :key,
     signer?: false,
-    writable?: false,
+    writable?: false
   ]
 end

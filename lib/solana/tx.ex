@@ -237,10 +237,7 @@ defmodule Solana.Transaction do
   end
 
   defp encode_message(accounts, blockhash, ixs, lookup_tables) do
-    invoked_accounts =
-      ixs
-      |> Enum.map(& &1.program)
-      |> Enum.reject(&is_nil/1)
+    invoked_accounts = for ix <- ixs, !is_nil(ix.program), into: MapSet.new(), do: program
 
     {static_accounts, lookup_accounts, compiled_lookup_tables} =
       compile_lookup_tables(accounts, invoked_accounts, lookup_tables)
