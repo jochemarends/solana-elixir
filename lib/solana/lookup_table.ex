@@ -9,12 +9,12 @@ defmodule Solana.LookupTable do
 
   @typedoc "Address lookup table account metadata."
   @type t :: %__MODULE__{
-        authority: Key.t() | nil,
-        keys: [Key.t()],
-        deactivation_slot: non_neg_integer(),
-        last_extended_slot: non_neg_integer(),
-        last_extended_slot_start_index: non_neg_integer()
-      }
+          authority: Key.t() | nil,
+          keys: [Key.t()],
+          deactivation_slot: non_neg_integer(),
+          last_extended_slot: non_neg_integer(),
+          last_extended_slot_start_index: non_neg_integer()
+        }
 
   defstruct [
     :authority,
@@ -53,15 +53,21 @@ defmodule Solana.LookupTable do
 
   def from_account_info(_), do: :error
 
-  defp from_lookup_table_account_info(%{
-        "addresses" => keys,
-        "deactivationSlot" => deactivation_slot,
-        "lastExtendedSlot" => last_extended_slot,
-        "lastExtendedSlotStartIndex" => last_extended_slot_start_index
-      } = info) do
-    authority = with encoded when encoded != nil <- Map.get(info, "authority") do
-      Solana.pubkey!(encoded)
-    end
+  defp from_lookup_table_account_info(%{"authority" => authority} = info) do
+    from_lookup_table_account_info(info, Solana.pubkey!(authority))
+  end
+
+  defp from_lookup_table_account_info(info), do: from_lookup_table_account_info(info, nil)
+
+  defp from_lookup_table_account_info(
+         %{
+           "addresses" => keys,
+           "deactivationSlot" => deactivation_slot,
+           "lastExtendedSlot" => last_extended_slot,
+           "lastExtendedSlotStartIndex" => last_extended_slot_start_index
+         },
+         authority
+       ) do
     %__MODULE__{
       authority: authority,
       keys: Enum.map(keys, &Solana.pubkey!/1),
@@ -70,8 +76,6 @@ defmodule Solana.LookupTable do
       last_extended_slot_start_index: last_extended_slot_start_index
     }
   end
-
-  defp from_lookup_table_account_info(_), do: :error
 
   @create_lookup_table_schema [
     authority: [
@@ -93,6 +97,12 @@ defmodule Solana.LookupTable do
       type: :non_neg_integer,
       required: true,
       doc: "A recent slot must be used in the derivation path for each initialized table"
+    ],
+    authority_should_sign?: [
+      type: :boolean,
+      default: false,
+      doc:
+        "Whether the authority should be a signer, which was required before version 1.1 of the address lookup table program"
     ]
   ]
   @doc """
@@ -112,13 +122,17 @@ defmodule Solana.LookupTable do
   end
 
   defp create_lookup_table_ix(params) do
-    with {:ok, lookup_table, bump_seed}
-      <- find_address(params.authority, params.recent_slot) do
+    with {:ok, lookup_table, bump_seed} <-
+           find_address(params.authority, params.recent_slot) do
       ix = %Instruction{
         program: id(),
         accounts: [
           %Account{key: lookup_table, signer?: false, writable?: true},
-          %Account{key: params.authority, signer?: false, writable?: false},
+          %Account{
+            key: params.authority,
+            signer?: params.authority_should_sign?,
+            writable?: false
+          },
           %Account{key: params.payer, signer?: true, writable?: true},
           %Account{key: SystemProgram.id(), signer?: false, writable?: false}
         ],
@@ -129,6 +143,7 @@ defmodule Solana.LookupTable do
             {bump_seed, 8}
           ])
       }
+
       {ix, lookup_table}
     end
   end
@@ -164,11 +179,10 @@ defmodule Solana.LookupTable do
   defp freeze_lookup_table_ix(params) do
     %Instruction{
       program: id(),
-      accounts:
-        List.flatten([
-          %Account{key: params.lookup_table, signer?: false, writable?: true},
-          %Account{key: params.authority, signer?: true, writable?: false},
-        ]),
+      accounts: [
+        %Account{key: params.lookup_table, signer?: false, writable?: true},
+        %Account{key: params.authority, signer?: true, writable?: false}
+      ],
       data: Instruction.encode_data([{1, 32}])
     }
   end
@@ -211,22 +225,30 @@ defmodule Solana.LookupTable do
   defp extend_lookup_table_ix(params) do
     %Instruction{
       program: id(),
-      accounts:
-        List.flatten([
-          %Account{key: params.lookup_table, signer?: false, writable?: true},
-          %Account{key: params.authority, signer?: true, writable?: false},
-          if(params[:payer], do: [
-            %Account{key: params.payer, signer?: true, writable?: true},
-            %Account{key: SystemProgram.id(), signer?: false, writable?: false}
-          ], else: [])
-        ]),
-      data: Instruction.encode_data(List.flatten([
-        {2, 32},
-        {length(params.new_keys), 64},
-        params.new_keys
-      ]))
+      accounts: [
+        %Account{key: params.lookup_table, signer?: false, writable?: true},
+        %Account{key: params.authority, signer?: true, writable?: false}
+        | payer_keys(params)
+      ],
+      data:
+        Instruction.encode_data([
+          {2, 32},
+          {length(params.new_keys), 64}
+          | params.new_keys
+        ])
     }
   end
+
+  defp payer_keys(%{payer: nil}), do: []
+
+  defp payer_keys(%{payer: payer}) do
+    [
+      %Account{key: payer, signer?: true, writable?: true},
+      %Account{key: SystemProgram.id(), signer?: false, writable?: false}
+    ]
+  end
+
+  defp payer_keys(_), do: []
 
   @deactivate_lookup_table_schema [
     lookup_table: [
@@ -261,11 +283,10 @@ defmodule Solana.LookupTable do
   defp deactivate_lookup_table_ix(params) do
     %Instruction{
       program: id(),
-      accounts:
-        List.flatten([
-          %Account{key: params.lookup_table, signer?: false, writable?: true},
-          %Account{key: params.authority, signer?: true, writable?: false},
-        ]),
+      accounts: [
+        %Account{key: params.lookup_table, signer?: false, writable?: true},
+        %Account{key: params.authority, signer?: true, writable?: false}
+      ],
       data: Instruction.encode_data([{3, 32}])
     }
   end
@@ -303,12 +324,11 @@ defmodule Solana.LookupTable do
   defp close_lookup_table_ix(params) do
     %Instruction{
       program: id(),
-      accounts:
-        List.flatten([
-          %Account{key: params.lookup_table, signer?: false, writable?: true},
-          %Account{key: params.authority, signer?: true, writable?: false},
-          %Account{key: params.recipient, signer?: false, writable?: true},
-        ]),
+      accounts: [
+        %Account{key: params.lookup_table, signer?: false, writable?: true},
+        %Account{key: params.authority, signer?: true, writable?: true},
+        %Account{key: params.recipient, signer?: false, writable?: true}
+      ],
       data: Instruction.encode_data([{4, 32}])
     }
   end

@@ -10,7 +10,6 @@ defmodule Solana.Account do
   @type t :: %__MODULE__{
           signer?: boolean(),
           writable?: boolean(),
-          invoked?: boolean(),
           key: Solana.key() | nil
         }
 
@@ -18,6 +17,5 @@ defmodule Solana.Account do
     :key,
     signer?: false,
     writable?: false,
-    invoked?: false
   ]
 end
