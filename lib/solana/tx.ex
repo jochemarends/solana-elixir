@@ -237,7 +237,7 @@ defmodule Solana.Transaction do
   end
 
   defp encode_message(accounts, blockhash, ixs, lookup_tables) do
-    invoked_accounts = for ix <- ixs, !is_nil(ix.program), into: MapSet.new(), do: program
+    invoked_accounts = for ix <- ixs, !is_nil(ix.program), into: MapSet.new(), do: ix.program
 
     {static_accounts, lookup_accounts, compiled_lookup_tables} =
       compile_lookup_tables(accounts, invoked_accounts, lookup_tables)
@@ -247,7 +247,7 @@ defmodule Solana.Transaction do
       create_header(static_accounts),
       CompactArray.to_iolist(Enum.map(static_accounts, & &1.key)),
       blockhash,
-      CompactArray.to_iolist(encode_instructions(ixs, static_accounts + lookup_accounts)),
+      CompactArray.to_iolist(encode_instructions(ixs, static_accounts ++ lookup_accounts)),
       CompactArray.to_iolist(compiled_lookup_tables)
     ]
     |> :erlang.list_to_binary()
